@@ -3,68 +3,53 @@
 用于量化入门教学，无外部依赖，函数式设计
 """
 
-import os
 import numpy as np
 import pandas as pd
-from typing import Tuple, Dict
+from typing import Dict, Tuple
+import os
 
 
-# 基础工具
 def ensure_dir(path: str) -> None:
     """若目录不存在则创建。"""
     if not os.path.exists(path):
         os.makedirs(path)
 
 
-def fetch_price(ticker: str, start: str = "2015-01-01", end: str = None, auto_adjust: bool = True) -> pd.DataFrame:
-    """用 yfinance 获取 OHLCV，DatetimeIndex，列含 Open/High/Low/Close/Volume。失败时返回空 DataFrame。"""
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, auto_adjust=auto_adjust, progress=False)
-        if data.empty:
-            print(f"Warning: No data downloaded for {ticker}")
-            return pd.DataFrame()
-        return data
-    except Exception as e:
-        print(f"Error downloading {ticker}: {e}")
-        return pd.DataFrame()
+def shift_exec(signal: pd.Series, n: int = 1) -> pd.Series:
+    """交易在下一期执行：返回 signal.shift(n).fillna(0)。"""
+    return signal.shift(n).fillna(0)
 
 
-# 收益与绩效
-def simple_return(px: pd.Series) -> pd.Series:
-    """简单收益率：px.pct_change().fillna(0)。"""
-    return px.pct_change().fillna(0)
+def turnover(pos: pd.Series) -> pd.Series:
+    """换手率：pos.diff().abs().fillna(0)。"""
+    return pos.diff().abs().fillna(0)
 
 
-def log_return(px: pd.Series) -> pd.Series:
-    """对数收益率：np.log(px/px.shift(1)).fillna(0)。"""
-    return np.log(px/px.shift(1)).fillna(0)
+def apply_cost(turnover: pd.Series, commission_bps=5, slippage_bps=2, half_spread_bps=5) -> pd.Series:
+    """按基点合计成本并换算为比例：单边总成本(bps)/1e4 * turnover。"""
+    total_cost_bps = commission_bps + slippage_bps + half_spread_bps
+    return turnover * (total_cost_bps / 1e4)
 
 
 def equity(ret: pd.Series) -> pd.Series:
-    """净值：(1+ret).cumprod()。"""
+    """净值曲线：(1+ret).cumprod()。"""
     return (1 + ret).cumprod()
 
 
-def drawdown(equity_series: pd.Series) -> pd.Series:
-    """回撤序列：equity/equity.cummax() - 1。"""
-    return equity_series / equity_series.cummax() - 1
-
-
 def max_drawdown(equity_series: pd.Series) -> float:
-    """最大回撤：drawdown().min()。"""
-    return drawdown(equity_series).min()
+    """最大回撤：min(equity/ equity.cummax() - 1)。"""
+    return (equity_series / equity_series.cummax() - 1).min()
 
 
 def perf(ret: pd.Series, periods: int = 252) -> Dict[str, float]:
-    """返回 {'CAGR','Vol','Sharpe','MaxDD'}；std 用 ddof=0。"""
+    """返回 {'CAGR','Vol','Sharpe','MaxDD'}（std 用 ddof=0）。"""
     eq = equity(ret)
     total_periods = len(ret)
     years = total_periods / periods
     
-    cagr = (eq.iloc[-1] ** (1/years)) - 1 if years > 0 and eq.iloc[-1] > 0 else 0
+    cagr = (eq.iloc[-1] ** (1/years)) - 1 if years > 0 else 0
     vol = ret.std(ddof=0) * np.sqrt(periods)
-    sharpe = (ret.mean() * periods) / (ret.std(ddof=0) * np.sqrt(periods)) if ret.std(ddof=0) > 0 else 0
+    sharpe = (ret.values.mean() * periods) / (ret.std(ddof=0) * np.sqrt(periods)) if ret.std(ddof=0) > 0 else 0
     max_dd = max_drawdown(eq)
     
     return {
@@ -73,9 +58,6 @@ def perf(ret: pd.Series, periods: int = 252) -> Dict[str, float]:
         'Sharpe': sharpe,
         'MaxDD': max_dd
     }
-
-
-# 常用指标（向量化）
 def sma(px: pd.Series, window: int) -> pd.Series:
     """简单均线。"""
     return px.rolling(window=window).mean()
@@ -143,20 +125,3 @@ def obv(px: pd.Series, vol: pd.Series) -> pd.Series:
     direction = np.where(price_change > 0, 1, np.where(price_change < 0, -1, 0))
     obv = (direction * vol).cumsum()
     return obv
-
-
-# 原有函数保留
-def shift_exec(signal: pd.Series, n: int = 1) -> pd.Series:
-    """交易在下一期执行：返回 signal.shift(n).fillna(0)。"""
-    return signal.shift(n).fillna(0)
-
-
-def turnover(pos: pd.Series) -> pd.Series:
-    """换手率：pos.diff().abs().fillna(0)。"""
-    return pos.diff().abs().fillna(0)
-
-
-def apply_cost(turnover: pd.Series, commission_bps=5, slippage_bps=2, half_spread_bps=5) -> pd.Series:
-    """按基点合计成本并换算为比例：单边总成本(bps)/1e4 * turnover。"""
-    total_cost_bps = commission_bps + slippage_bps + half_spread_bps
-    return turnover * (total_cost_bps / 1e4)
